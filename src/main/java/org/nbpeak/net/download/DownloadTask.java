@@ -1,5 +1,6 @@
 package org.nbpeak.net.download;
 
+import lombok.extern.slf4j.Slf4j;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -14,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+@Slf4j
 public class DownloadTask {
     private boolean chunked;
     private boolean supportBreakpoint;
@@ -35,8 +37,9 @@ public class DownloadTask {
      * @throws IOException
      */
     private void initDownloadInfo(String url) throws IOException {
-        // 创建客户端对象和请求对象，发起head请求
+        log.info("初始化，获取下载文件信息...");
         OkHttpClient client = new OkHttpClient();
+        // 创建客户端对象和请求对象，发起head请求
         Request headRequest = new Request.Builder()
                 .head()
                 .url(url)
@@ -46,20 +49,25 @@ public class DownloadTask {
         try (Response response = client.newCall(headRequest).execute()) {
             long length = -1;
             String fileName = getFileName(response);
+            log.info("获取到文件名：" + fileName);
 
             // 获取分块传输标志
             String transferEncoding = response.header("Transfer-Encoding");
             this.chunked = "chunked".equals(transferEncoding);
+            log.info("是否分块传输：" + Utils.yesOrNo(chunked));
             // 没有分块传输才可获取到文件长度
             if (!this.chunked) {
                 String strLen = response.header("Content-Length");
                 length = NumberUtils.toLong(strLen, length);
+                log.info("文件大小：" + Utils.byteToUnit(length));
             }
 
             // 是否支持断点续传
             String acceptRanges = response.header("Accept-Ranges");
             this.supportBreakpoint = "bytes".equalsIgnoreCase(acceptRanges);
             this.eTag = response.header("ETag");
+            log.info("是否支持断点续传：" + Utils.yesOrNo(supportBreakpoint));
+            log.info("ETag：" + eTag);
 
             // 创建下载信息
             this.downloadInfo = new DownloadInfo(new URL(url), length, fileName);
