@@ -1,4 +1,4 @@
-package org.nbpeak.net.download;
+package org.nbpeak.net.download.demo;
 
 import java.io.IOException;
 
@@ -14,7 +14,7 @@ public class App {
         try {
             final DownloadTask3 downloadTask = new DownloadTask3(uri);
             downloadTask.start("D:/temp");
-        } catch (IOException | InterruptedException e) {
+        } catch (IOException e) {
             e.printStackTrace();
         }
     }

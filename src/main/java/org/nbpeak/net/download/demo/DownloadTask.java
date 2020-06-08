@@ -1,10 +1,12 @@
-package org.nbpeak.net.download;
+package org.nbpeak.net.download.demo;
 
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.nbpeak.net.download.Utils;
+import org.nbpeak.net.download.demo.pojo.DownloadInfo;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -15,6 +17,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+/**
+ * 单线程下载，主要为了演示OkHttp的基本用法
+ */
 @Slf4j
 public class DownloadTask {
     private boolean chunked;
@@ -94,11 +99,11 @@ public class DownloadTask {
                 .url(downloadInfo.getLocation())
                 .build();
 
-        System.out.println("下载任务开始");
-        System.out.println("下载地址：" + downloadInfo.getLocation());
-        System.out.println("保存地址：" + downloadInfo.getLocalPath());
-        System.out.println("文件大小：" + Utils.byteToUnit(downloadInfo.getFileSize()));
-        System.out.println("是否支持断点续传：" + Utils.yesOrNo(isSupportBreakpoint()));
+        log.info("下载任务开始");
+        log.info("下载地址：" + downloadInfo.getLocation());
+        log.info("保存地址：" + downloadInfo.getLocalPath());
+        log.info("文件大小：" + Utils.byteToUnit(downloadInfo.getFileSize()));
+        log.info("是否支持断点续传：" + Utils.yesOrNo(isSupportBreakpoint()));
         downloadInfo.setStatus(DownloadInfo.Status.RUNNING);
         try (Response response = client.newCall(getRequest).execute()) {
             final Path localPath = downloadInfo.getLocalPath();
@@ -106,7 +111,7 @@ public class DownloadTask {
             final InputStream inputStream = response.body().byteStream();
             Files.copy(inputStream, localPath);
             downloadInfo.setStatus(DownloadInfo.Status.FINISHED);
-            System.out.println("下载完成");
+            log.info("下载完成");
         }
     }
 
@@ -124,8 +129,10 @@ public class DownloadTask {
         String contentDisposition = response.header("Content-Disposition");
         if (contentDisposition != null) {
             int p1 = contentDisposition.indexOf("filename");
+            //有的Content-Disposition里面的filename后面是*=，是*=的文件名后面一般都带了编码名称，按它提供的编码进行解码可以避免文件名乱码
             int p2 = contentDisposition.indexOf("*=", p1);
             if (p2 >= 0) {
+                //有的Content-Disposition里面会在文件名后面带上文件名的字符编码
                 int p3 = contentDisposition.indexOf("''", p2);
                 if (p3 >= 0) {
                     charset = contentDisposition.substring(p2 + 2, p3);

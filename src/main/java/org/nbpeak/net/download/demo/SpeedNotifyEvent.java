@@ -1,4 +1,4 @@
-package org.nbpeak.net.download;
+package org.nbpeak.net.download.demo;
 
 public interface SpeedNotifyEvent {
 

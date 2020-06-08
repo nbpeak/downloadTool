@@ -1,4 +1,4 @@
-package org.nbpeak.net.download;
+package org.nbpeak.net.download.demo;
 
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.Call;
@@ -7,6 +7,8 @@ import okhttp3.Request;
 import okhttp3.Response;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.nbpeak.net.download.Utils;
+import org.nbpeak.net.download.demo.pojo.DownloadInfo;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -75,6 +77,9 @@ public class DownloadTask2 {
         }
     }
 
+    /**
+     * 下载任务
+     */
     class TaskInfo implements Callable<Result> {
         private long startPos;
         private long endPos;
@@ -201,9 +206,12 @@ public class DownloadTask2 {
         }
         downloadInfo.setLocalPath(Paths.get(saveTo, downloadInfo.getFileName()));
 
-        long threshold = 1024 * 1024 * 2;
+        long threshold = 1024 * 1024 * 2;// 每个任务的阈值
         List<TaskInfo> taskInfoList = new ArrayList<>();
+        // 根据阈值将下载任务拆分成诺干分
         if (isSupportBreakpoint() && downloadInfo.getFileSize() > threshold) {
+            // 只有支持断点续传，并且获取到了文件大小才能将文件分成多个任务运行。
+            // 下面是按阈值分解任务，线程数固定，但任务数不固定，每个任务大小都差不多
             long startPos = 0, endPos = 0;
             long count = downloadInfo.getFileSize() / threshold;
             for (long i = 0; i < count; i++) {
@@ -215,10 +223,11 @@ public class DownloadTask2 {
                 taskInfoList.add(new TaskInfo(endPos + 1, -1));
             }
         } else {
+            // 不支持断点续传，或者没获取到文件大小，就只有一个任务
             taskInfoList.add(new TaskInfo(0, downloadInfo.getFileSize()));
         }
-        speedStatistician.start();
 
+        speedStatistician.start();
         Instant start = Instant.now();
 
         try {
@@ -281,10 +290,21 @@ public class DownloadTask2 {
         }
     }
 
+    /**
+     * 根据Path获取FileSystemProvider，NIO的Files.copy里面就是这样用的，很高大上的感觉
+     *
+     * @param filePath
+     * @return
+     */
     private FileSystemProvider getProvider(Optional<Path> filePath) {
         return filePath.get().getFileSystem().provider();
     }
 
+    /**
+     * 获取下载文件保存的临时目录
+     *
+     * @return
+     */
     private Path getTempPath() {
         String tmpDirPath = System.getProperty("java.io.tmpdir");
         Path tmpPath = Paths.get(tmpDirPath, "javaDownload", downloadInfo.getFileName());
@@ -305,8 +325,10 @@ public class DownloadTask2 {
         String contentDisposition = response.header("Content-Disposition");
         if (contentDisposition != null) {
             int p1 = contentDisposition.indexOf("filename");
+            //有的Content-Disposition里面的filename后面是*=，是*=的文件名后面一般都带了编码名称，按它提供的编码进行解码可以避免文件名乱码
             int p2 = contentDisposition.indexOf("*=", p1);
             if (p2 >= 0) {
+                //有的Content-Disposition里面会在文件名后面带上文件名的字符编码
                 int p3 = contentDisposition.indexOf("''", p2);
                 if (p3 >= 0) {
                     charset = contentDisposition.substring(p2 + 2, p3);

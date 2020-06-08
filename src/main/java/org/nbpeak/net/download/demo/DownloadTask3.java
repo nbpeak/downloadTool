@@ -1,4 +1,4 @@
-package org.nbpeak.net.download;
+package org.nbpeak.net.download.demo;
 
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.Call;
@@ -7,6 +7,8 @@ import okhttp3.Request;
 import okhttp3.Response;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.nbpeak.net.download.Utils;
+import org.nbpeak.net.download.demo.pojo.DownloadInfo;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -18,17 +20,15 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.spi.FileSystemProvider;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
-import java.util.concurrent.*;
-import java.util.stream.Collectors;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.PriorityBlockingQueue;
 
 /**
- * TODO: 方案三：类似方案二，但每个下载线程会将数据写入缓存队列，由另一组线程写到文件中
+ * 方案三：类似方案二，但每个下载线程会将数据写入缓存队列，由另一个线程写到文件中
  */
 @Slf4j
 public class DownloadTask3 {
@@ -41,19 +41,30 @@ public class DownloadTask3 {
     private final static int THREAD_COUNT = 8;
     private SpeedStatistician speedStatistician = new SpeedStatistician(speed -> {
         log.info("下载速度：" + Utils.byteToUnit(speed) + "/秒");
+//        log.info("当前缓存队列数据：" + this.dataQueue.size());
     });
 
     private BlockingQueue<BuffData> dataQueue = new PriorityBlockingQueue<>();
 
-    class BuffData {
+    /**
+     * 存储Buf数据，记录每个Buf的范围
+     * PriorityBlockingQueue 需要给一个排序器或在元素实现了Comparable
+     */
+    class BuffData implements Comparable {
+        private int num;
         private long startPos;
         private long endPos;
         private ByteBuffer buffer;
 
-        public BuffData(long startPos, long endPos) {
+        public BuffData(int num, long startPos, long endPos) {
             this.startPos = startPos;
             this.endPos = endPos;
+            this.num = num;
             this.buffer = ByteBuffer.allocate((int) (endPos - startPos + 1));
+        }
+
+        public int getNum() {
+            return num;
         }
 
         public void write(byte[] src) {
@@ -75,40 +86,18 @@ public class DownloadTask3 {
         public long getEndPos() {
             return endPos;
         }
-    }
-
-    class Result {
-        private int num;
-        private Path path;
-
-        public Result(int num, Path path) {
-            this.num = num;
-            this.path = path;
-        }
-
-        public int getNum() {
-            return num;
-        }
-
-        public Path getPath() {
-            return path;
-        }
 
         @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-            Result result = (Result) o;
-            return num == result.num;
-        }
-
-        @Override
-        public int hashCode() {
-            return num;
+        public int compareTo(Object o) {
+            BuffData buffData = (BuffData) o;
+            return this.getNum() - buffData.getNum();
         }
     }
 
-    class TaskInfo implements Callable<Result> {
+    /**
+     * 下载任务
+     */
+    class TaskInfo implements Runnable {
         private long startPos;
         private long endPos;
         private final int serialNum;
@@ -120,7 +109,7 @@ public class DownloadTask3 {
         }
 
         @Override
-        public Result call() throws Exception {
+        public void run() {
             String rangeStr = "bytes=" + startPos + "-" + endPos;
             Request.Builder builder = new Request.Builder()
                     .get()
@@ -134,7 +123,7 @@ public class DownloadTask3 {
             log.info("任务：" + serialNum + "，开始下载：" + rangeStr);
             try (Response response = call.execute()) {
                 log.info("任务：" + serialNum + "，获得响应，内容长度：" + response.body().contentLength());
-                BuffData buffData = new BuffData(startPos, endPos);
+                BuffData buffData = new BuffData(serialNum, startPos, endPos);
                 byte[] data = new byte[1024 * 8];
                 int len;
                 InputStream inputStream = response.body().byteStream();
@@ -142,12 +131,10 @@ public class DownloadTask3 {
                     speedStatistician.add(len);
                     buffData.write(data, 0, len);
                 }
-                dataQueue.offer(buffData);
+                dataQueue.offer(buffData);// 将缓存数据放入队列
                 log.info("任务：" + serialNum + "，数据以写入缓存");
-                return new Result(serialNum, null);
             } catch (IOException e) {
                 log.error("下载出错了：", e);
-                throw e;
             }
         }
     }
@@ -210,7 +197,7 @@ public class DownloadTask3 {
      * @param saveTo 保存到哪
      * @throws IOException
      */
-    public void start(String saveTo) throws IOException, InterruptedException {
+    public void start(String saveTo) throws IOException {
         // 确保目录存在
         Path dirPath = Paths.get(saveTo);
         if (!Files.exists(dirPath)) {
@@ -219,9 +206,12 @@ public class DownloadTask3 {
         }
         downloadInfo.setLocalPath(Paths.get(saveTo, downloadInfo.getFileName()));
 
-        long threshold = 1024 * 1024 * 2;
+        long threshold = 1024 * 1024 * 2; // 每个任务的阈值2MB
         List<TaskInfo> taskInfoList = new ArrayList<>();
+        // 根据阈值将下载任务拆分成诺干分
         if (isSupportBreakpoint() && downloadInfo.getFileSize() > threshold) {
+            // 只有支持断点续传，并且获取到了文件大小才能将文件分成多个任务运行。
+            // 下面是按阈值分解任务，线程数固定，但任务数不固定，每个任务大小都差不多
             long startPos = 0, endPos = 0;
             long count = downloadInfo.getFileSize() / threshold;
             for (long i = 0; i < count; i++) {
@@ -233,13 +223,12 @@ public class DownloadTask3 {
                 taskInfoList.add(new TaskInfo(endPos + 1, downloadInfo.getFileSize() - 1));
             }
         } else {
+            // 不支持断点续传，或者没获取到文件大小，就只有一个任务
             taskInfoList.add(new TaskInfo(0, downloadInfo.getFileSize()));
         }
         speedStatistician.start();
 
-        Instant start = Instant.now();
-        ExecutorService downloadPool = Executors.newFixedThreadPool(THREAD_COUNT);
-        List<Future<Result>> futures = taskInfoList.stream().map(downloadPool::submit).collect(Collectors.toList());
+        // 写文件线程，从缓存队列中取下载好的数据
         Thread writeThread = new Thread(() -> {
             try (RandomAccessFile randomAccessFile = new RandomAccessFile(downloadInfo.getLocalPath().toAbsolutePath().toString(), "rw")) {
                 long writSize = 0;
@@ -256,31 +245,16 @@ public class DownloadTask3 {
             }
         }, "写文件线程");
         writeThread.start();
-        try {
-            for (Future<Result> future : futures) {
-                if (!future.isDone()) {
-                    future.get();
-                }
-            }
-            Instant end = Instant.now();
-            Duration time = Duration.between(start, end);
-            log.info("下载结束，耗时：" + time.getSeconds() + " 秒");
-            downloadPool.shutdown();
-        } catch (ExecutionException e) {
-            log.error("出现异常：", e);
-        } finally {
-            speedStatistician.stop();
-        }
-    }
 
-    private FileSystemProvider getProvider(Optional<Path> filePath) {
-        return filePath.get().getFileSystem().provider();
-    }
-
-    private Path getTempPath() {
-        String tmpDirPath = System.getProperty("java.io.tmpdir");
-        Path tmpPath = Paths.get(tmpDirPath, "javaDownload", downloadInfo.getFileName());
-        return tmpPath;
+        // 利用并发流执行任务
+        Instant start = Instant.now();
+        // 控制并发流的线程数（这是全局的设定，不太灵活）
+        System.setProperty("java.util.concurrent.ForkJoinPool.common.parallelism", String.valueOf(THREAD_COUNT));
+        taskInfoList.parallelStream().forEach(TaskInfo::run);
+        Instant end = Instant.now();
+        Duration time = Duration.between(start, end);
+        log.info("下载结束，耗时：" + time.getSeconds() + " 秒");
+        speedStatistician.stop();
     }
 
     /**
@@ -297,8 +271,10 @@ public class DownloadTask3 {
         String contentDisposition = response.header("Content-Disposition");
         if (contentDisposition != null) {
             int p1 = contentDisposition.indexOf("filename");
+            //有的Content-Disposition里面的filename后面是*=，是*=的文件名后面一般都带了编码名称，按它提供的编码进行解码可以避免文件名乱码
             int p2 = contentDisposition.indexOf("*=", p1);
             if (p2 >= 0) {
+                //有的Content-Disposition里面会在文件名后面带上文件名的字符编码
                 int p3 = contentDisposition.indexOf("''", p2);
                 if (p3 >= 0) {
                     charset = contentDisposition.substring(p2 + 2, p3);

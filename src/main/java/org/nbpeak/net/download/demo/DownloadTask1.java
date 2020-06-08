@@ -1,4 +1,4 @@
-package org.nbpeak.net.download;
+package org.nbpeak.net.download.demo;
 
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.Call;
@@ -7,6 +7,8 @@ import okhttp3.Request;
 import okhttp3.Response;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
+import org.nbpeak.net.download.Utils;
+import org.nbpeak.net.download.demo.pojo.DownloadInfo;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -42,6 +44,9 @@ public class DownloadTask1 {
         log.info("速度：" + Utils.byteToUnit(speed) + "/秒");
     });
 
+    /**
+     * 任务的结果
+     */
     class Result {
         private int num;
         private Path path;
@@ -60,7 +65,11 @@ public class DownloadTask1 {
         }
     }
 
+    /**
+     * 下载任务
+     */
     class TaskInfo implements Callable<Result> {
+        // 当前任务的开始点和结束点
         private long startPos;
         private long endPos;
         private final int serialNum;
@@ -68,6 +77,7 @@ public class DownloadTask1 {
         public TaskInfo(long startPos, long endPos) {
             this.startPos = startPos;
             this.endPos = endPos;
+            // 任务编号，每个任务的编号和任务下载的范围对应，在合并文件时按编号的顺序依次将临时文件中的内容写到目标文件去才能保证文件内容正确。
             this.serialNum = COUNTER++;
         }
 
@@ -81,10 +91,10 @@ public class DownloadTask1 {
             }
             Request.Builder builder = new Request.Builder()
                     .get()
-                    .header("Range", rangeStr)
+                    .header("Range", rangeStr) // 这个头时告诉服务器取文件哪个部分的内容，要实现断点续传或分片下载，必须传入这个头
                     .url(downloadInfo.getLocation());
             if (StringUtils.isNotEmpty(eTag)) {
-                builder.header("ETag", eTag);
+                builder.header("ETag", eTag);// 有些服务器的断点续传需要带上ETag
             }
             Request getRequest = builder.build();
             Call call = client.newCall(getRequest);
@@ -98,13 +108,15 @@ public class DownloadTask1 {
                     Files.createDirectories(tmpPath);
                 }
                 Path filePath = tmpPath.resolve(serialNum + ".dt");
+
+                // 将下载的内容写到临时文件，每个任务写一个临时文件
                 log.info("开始写入：" + filePath);
                 OutputStream outputStream = filePath.getFileSystem().provider().newOutputStream(filePath, StandardOpenOption.WRITE, StandardOpenOption.CREATE);
                 byte[] buf = new byte[8192];
                 int n;
                 long nread = 0L;
                 while ((n = inputStream.read(buf)) > 0) {
-                    speedStatistician.add(n);
+                    speedStatistician.add(n); // 统计下载速度
                     outputStream.write(buf, 0, n);
                     nread += n;
                 }
@@ -185,9 +197,12 @@ public class DownloadTask1 {
         }
         downloadInfo.setLocalPath(Paths.get(saveTo, downloadInfo.getFileName()));
 
+        // 开8个线程
         int threadCount = 8;
         List<TaskInfo> taskInfoList = new ArrayList<>();
         if (isSupportBreakpoint() && downloadInfo.getFileSize() > 0) {
+            // 只有支持断点续传，并且获取到了文件大小才能将文件分成多个任务运行。
+            // 下面是按线程数分解任务，每个线程的任务大小都差不多
             long total = downloadInfo.getFileSize(), taskSize = total / threadCount;
             for (int i = 0; i < threadCount; i++) {
                 long startPos = i * taskSize;
@@ -198,8 +213,10 @@ public class DownloadTask1 {
                 taskInfoList.add(new TaskInfo(startPos, endPos));
             }
         } else {
+            // 不支持断点续传，或者没获取到文件大小，就只有一个任务
             taskInfoList.add(new TaskInfo(0, downloadInfo.getFileSize()));
         }
+        // 开始执行任务
         ExecutorService threadPool = Executors.newFixedThreadPool(taskInfoList.size());
         speedStatistician.start();
 
@@ -214,6 +231,7 @@ public class DownloadTask1 {
             Duration time = Duration.between(start, end);
             log.info("下载结束，耗时：" + time.getSeconds() + " 秒");
             threadPool.shutdown();
+            // 所有下载任务都结束后，开始将临时文件合并到下载目录
             merge(Optional.of(resultList));
             Files.delete(getTempPath());
         } catch (ExecutionException e) {
@@ -225,27 +243,43 @@ public class DownloadTask1 {
 
     private void merge(Optional<List<Result>> resultList) throws IOException {
         log.info("开始合并文件");
+        // 参考的Files.copy复制文件的方法，一行代码搞定文件不存在或已存在的问题。
         try (OutputStream outputStream = getProvider(Optional.of(downloadInfo.getLocalPath())).newOutputStream(downloadInfo.getLocalPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
-            resultList.get().stream().sorted(Comparator.comparingInt(Result::getNum)).forEach(result -> {
-                try (InputStream inputStream = getProvider(Optional.of(result.getPath())).newInputStream(result.getPath(), StandardOpenOption.READ, StandardOpenOption.DELETE_ON_CLOSE)) {
-                    log.info("开始读" + result.getPath());
-                    byte[] buf = new byte[1048576];
-                    int len;
-                    while ((len = inputStream.read(buf)) > 0) {
-                        outputStream.write(buf, 0, len);
-                    }
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            });
+            resultList.get() // 从Optional里面获取list
+                    .stream() // 产生stream对象
+                    .sorted(Comparator.comparingInt(Result::getNum)) // 先按结果编号排序，然后挨个将临时文件的内容写到下载目录去
+                    .forEach(result -> {
+                        // 一行代码搞定临时文件读完后删除的问题。
+                        try (InputStream inputStream = getProvider(Optional.of(result.getPath())).newInputStream(result.getPath(), StandardOpenOption.READ, StandardOpenOption.DELETE_ON_CLOSE)) {
+                            log.info("开始读" + result.getPath());
+                            byte[] buf = new byte[1048576];
+                            int len;
+                            while ((len = inputStream.read(buf)) > 0) {
+                                outputStream.write(buf, 0, len);
+                            }
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                    });
             log.info("文件合并结束：" + downloadInfo.getLocalPath());
         }
     }
 
+    /**
+     * 根据Path获取FileSystemProvider，NIO的Files.copy里面就是这样用的，很高大上的感觉
+     *
+     * @param filePath
+     * @return
+     */
     private FileSystemProvider getProvider(Optional<Path> filePath) {
         return filePath.get().getFileSystem().provider();
     }
 
+    /**
+     * 获取下载文件保存的临时目录
+     *
+     * @return
+     */
     private Path getTempPath() {
         String tmpDirPath = System.getProperty("java.io.tmpdir");
         Path tmpPath = Paths.get(tmpDirPath, "javaDownload", downloadInfo.getFileName());
@@ -266,8 +300,10 @@ public class DownloadTask1 {
         String contentDisposition = response.header("Content-Disposition");
         if (contentDisposition != null) {
             int p1 = contentDisposition.indexOf("filename");
+            //有的Content-Disposition里面的filename后面是*=，是*=的文件名后面一般都带了编码名称，按它提供的编码进行解码可以避免文件名乱码
             int p2 = contentDisposition.indexOf("*=", p1);
             if (p2 >= 0) {
+                //有的Content-Disposition里面会在文件名后面带上文件名的字符编码
                 int p3 = contentDisposition.indexOf("''", p2);
                 if (p3 >= 0) {
                     charset = contentDisposition.substring(p2 + 2, p3);
